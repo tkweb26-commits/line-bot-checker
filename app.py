@@ -10,10 +10,10 @@ import requests
 app = Flask(__name__)
 
 # 環境變數
-TOKEN   = os.environ.get('LINE_TOKEN', '')
-SECRET  = os.environ.get('LINE_SECRET', '')
+TOKEN    = os.environ.get('LINE_TOKEN', '')
+SECRET   = os.environ.get('LINE_SECRET', '')
 GROUP_ID = os.environ.get('GROUP_ID', '')
-# 以逗號分隔的兩位成員 User ID，例如: Uabc123,Uxyz456
+# 以逗號分隔的成員 User ID，例如: Uabc123,Uxyz456
 MENTION_USERS = [u.strip() for u in os.environ.get('MENTION_USERS', '').split(',') if u.strip()]
 
 KEYWORD = '南工區-新興段三小段1756案-'
@@ -21,10 +21,13 @@ KEYWORD = '南工區-新興段三小段1756案-'
 # 台灣時間 UTC+8
 CST = timezone(timedelta(hours=8))
 
-# 記錄當天是否已上傳（伺服器重啟會重置，屬正常情況）
+# 記錄當天是否已上傳
 upload_status = {}   # { 'YYYY-MM-DD': True }
 
-# 自動蒐集群組與成員資訊（方便後續取得 ID）
+# 記錄最後一次提醒時間（防止重複發送）
+last_remind = {}     # { 'YYYY-MM-DD': datetime }
+
+# 自動蒐集群組與成員資訊
 seen_groups = set()
 seen_users  = set()
 
@@ -36,6 +39,23 @@ def today_str():
 def verify_signature(body: bytes, signature: str) -> bool:
     h = hmac.new(SECRET.encode('utf-8'), body, hashlib.sha256).digest()
     return hmac.compare_digest(base64.b64encode(h).decode('utf-8'), signature)
+
+
+def get_display_name(user_id: str) -> str:
+    """從 LINE API 取得群組成員的顯示名稱"""
+    if not GROUP_ID or not TOKEN:
+        return '同仁'
+    try:
+        resp = requests.get(
+            f'https://api.line.me/v2/bot/group/{GROUP_ID}/member/{user_id}',
+            headers={'Authorization': f'Bearer {TOKEN}'},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            return resp.json().get('displayName', '同仁')
+    except Exception:
+        pass
+    return '同仁'
 
 
 # ── 健康檢查（Keep-alive ping 用）──────────────────────────────
@@ -57,9 +77,9 @@ def webhook():
     today = today_str()
 
     for event in data.get('events', []):
-        src  = event.get('source', {})
-        gid  = src.get('groupId', '')
-        uid  = src.get('userId', '')
+        src = event.get('source', {})
+        gid = src.get('groupId', '')
+        uid = src.get('userId', '')
 
         if gid:
             seen_groups.add(gid)
@@ -79,19 +99,20 @@ def webhook():
     return 'OK', 200
 
 
-# ── 狀態查詢（取得 Group ID / User ID 用）─────────────────────
+# ── 狀態查詢 ───────────────────────────────────────────────────
 @app.route('/status', methods=['GET'])
 def status():
     today = today_str()
     return jsonify({
-        'today'        : today,
-        'uploaded'     : upload_status.get(today, False),
-        'history'      : upload_status,
-        'group_ids'    : list(seen_groups),
-        'user_ids'     : list(seen_users),
+        'today'       : today,
+        'uploaded'    : upload_status.get(today, False),
+        'last_remind' : str(last_remind.get(today, '尚未提醒')),
+        'history'     : upload_status,
+        'group_ids'   : list(seen_groups),
+        'user_ids'    : list(seen_users),
         'config': {
-            'GROUP_ID'      : GROUP_ID or '(未設定)',
-            'MENTION_USERS' : MENTION_USERS or ['(未設定)'],
+            'GROUP_ID'     : GROUP_ID or '(未設定)',
+            'MENTION_USERS': MENTION_USERS or ['(未設定)'],
         }
     })
 
@@ -110,19 +131,26 @@ def check():
     if upload_status.get(today, False):
         return jsonify({'status': '已上傳', 'date': today})
 
+    # 30 分鐘冷卻：防止重複提醒
+    last = last_remind.get(today)
+    if last and (now - last).total_seconds() < 30 * 60:
+        remaining = int(30 - (now - last).total_seconds() / 60)
+        return jsonify({'status': f'冷卻中，{remaining} 分鐘後可再次提醒'})
+
     if not GROUP_ID:
         return jsonify({'error': 'GROUP_ID 尚未設定'}), 500
 
-    # 建立含 @mention 的提醒訊息
+    # 取得成員顯示名稱並建立 @mention 訊息
     text_parts = []
     mentions   = []
     pos = 0
 
-    for i, uid in enumerate(MENTION_USERS, 1):
-        placeholder = f'@同仁{i} '
+    for uid in MENTION_USERS:
+        name = get_display_name(uid)
+        placeholder = f'@{name} '
         mentions.append({
             'index'    : pos,
-            'length'   : len(placeholder.rstrip()),   # 不含尾部空格
+            'length'   : len(f'@{name}'),
             'mentionee': {'type': 'user', 'userId': uid}
         })
         text_parts.append(placeholder)
@@ -145,12 +173,15 @@ def check():
     resp = requests.post(
         'https://api.line.me/v2/bot/message/push',
         headers={
-            'Authorization' : f'Bearer {TOKEN}',
-            'Content-Type'  : 'application/json'
+            'Authorization': f'Bearer {TOKEN}',
+            'Content-Type' : 'application/json'
         },
         json={'to': GROUP_ID, 'messages': [message]},
         timeout=10
     )
+
+    if resp.status_code == 200:
+        last_remind[today] = now
 
     print(f'[REMIND] {resp.status_code} {resp.text}')
     return jsonify({
