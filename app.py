@@ -142,25 +142,13 @@ def check():
     if not GROUP_ID:
         return jsonify({'error': 'GROUP_ID 尚未設定'}), 500
 
-    # 取得成員顯示名稱並建立 @mention 訊息
-    text_parts = []
-    mentions   = []
-    pos = 0
-
-    for i, uid in enumerate(MENTION_USERS):
-        name = MENTION_NAMES[i] if i < len(MENTION_NAMES) else f'同仁{i+1}'
-        placeholder = f'@{name} '
-        mentions.append({
-            'index'    : pos,
-            'length'   : len(f'@{name}'),
-            'mentionee': {'type': 'user', 'userId': uid}
-        })
-        text_parts.append(placeholder)
-        pos += len(placeholder)
-
+    # 使用 textV2 格式支援正確的 @mention 通知
     time_str = now.strftime('%H:%M')
+
+    # 建立 mention 佔位符，例如 {m0} {m1}
+    mention_placeholders = ' '.join([f'{{m{i}}}' for i in range(len(MENTION_USERS))])
     body_text = (
-        ''.join(text_parts)
+        mention_placeholders
         + f'\n⚠️ 提醒（{time_str}）\n'
         + '今日尚未上傳以下檔案，\n'
         + '請盡快上傳，謝謝！🙏\n\n'
@@ -170,9 +158,18 @@ def check():
         + '打石工分攤總表(6月)有力.xlsx'
     )
 
-    message = {'type': 'text', 'text': body_text}
-    if mentions:
-        message['mentions'] = mentions
+    substitution = {}
+    for i, uid in enumerate(MENTION_USERS):
+        substitution[f'm{i}'] = {
+            'type'     : 'mention',
+            'mentionee': {'type': 'user', 'userId': uid}
+        }
+
+    message = {
+        'type'        : 'textV2',
+        'text'        : body_text,
+        'substitution': substitution
+    }
 
     resp = requests.post(
         'https://api.line.me/v2/bot/message/push',
