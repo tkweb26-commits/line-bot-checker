@@ -15,6 +15,8 @@ SECRET   = os.environ.get('LINE_SECRET', '')
 GROUP_ID = os.environ.get('GROUP_ID', '')
 # 以逗號分隔的成員 User ID，例如: Uabc123,Uxyz456
 MENTION_USERS = [u.strip() for u in os.environ.get('MENTION_USERS', '').split(',') if u.strip()]
+# 對應 MENTION_USERS 的顯示名稱，逗號分隔，例如: 修荃,姿萍
+MENTION_NAMES = [n.strip() for n in os.environ.get('MENTION_NAMES', '').split(',') if n.strip()]
 
 KEYWORD = '南工區-新興段三小段1756案-'
 
@@ -145,8 +147,8 @@ def check():
     mentions   = []
     pos = 0
 
-    for uid in MENTION_USERS:
-        name = get_display_name(uid)
+    for i, uid in enumerate(MENTION_USERS):
+        name = MENTION_NAMES[i] if i < len(MENTION_NAMES) else f'同仁{i+1}'
         placeholder = f'@{name} '
         mentions.append({
             'index'    : pos,
@@ -160,10 +162,12 @@ def check():
     body_text = (
         ''.join(text_parts)
         + f'\n⚠️ 提醒（{time_str}）\n'
-        + '今日尚未上傳\n'
-        + '【南工區-新興段三小段1756案】\n'
-        + '工分攤總表 Excel 檔，\n'
-        + '請盡快上傳，謝謝！🙏'
+        + '今日尚未上傳以下檔案，\n'
+        + '請盡快上傳，謝謝！🙏\n\n'
+        + '📄 南工區-新興段三小段1756案-\n'
+        + '租約工分攤總表(6月)聰典.xlsx\n'
+        + '📄 南工區-新興段三小段1756案-\n'
+        + '打石工分攤總表(6月)有力.xlsx'
     )
 
     message = {'type': 'text', 'text': body_text}
