@@ -138,7 +138,7 @@ def webhook():
             if msg.get('type') == 'file':
                 fname = msg.get('fileName', '')
                 print(f'[FILE] {fname} | group={gid} | user={uid}')
-                if KEYWORD in fname and fname.lower().endswith('.xlsx'):
+                if KEYWORD in fname:
                     mark_uploaded()
                     print(f'[✅] 已上傳：{fname}（{today_str()}）')
 
