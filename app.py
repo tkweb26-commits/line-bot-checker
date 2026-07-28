@@ -3,6 +3,7 @@ import json
 import hmac
 import hashlib
 import base64
+import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, abort, jsonify
 import requests
@@ -63,15 +64,22 @@ def redis_get(key):
     return None
 
 def redis_set(key, value, ex=90000):
-    """設定值，預設 25 小時後自動過期"""
+    """設定值，預設 25 小時後自動過期。失敗時最多重試 3 次。"""
     if not UPSTASH_URL:
-        return
-    try:
-        requests.get(f'{UPSTASH_URL}/set/{key}/{value}',
-                     params={'ex': ex},
-                     headers=_redis_headers(), timeout=5)
-    except Exception as e:
-        print(f'[Redis SET error] {e}')
+        return False
+    for attempt in range(3):
+        try:
+            r = requests.get(f'{UPSTASH_URL}/set/{key}/{value}',
+                             params={'ex': ex},
+                             headers=_redis_headers(), timeout=5)
+            if r.status_code == 200:
+                return True
+            print(f'[Redis SET warn] attempt={attempt+1} status={r.status_code}')
+        except Exception as e:
+            print(f'[Redis SET error] attempt={attempt+1} {e}')
+        time.sleep(0.5)
+    print(f'[Redis SET FAILED] key={key} after 3 attempts')
+    return False
 
 
 # ── 上傳狀態（持久化）─────────────────────────────────────────
@@ -82,8 +90,10 @@ def is_uploaded():
     return _mem_upload.get(today_str(), False)
 
 def mark_uploaded():
-    redis_set(f'upload:{today_str()}', '1')
+    ok = redis_set(f'upload:{today_str()}', '1')
     _mem_upload[today_str()] = True
+    print(f'[MARK_UPLOADED] {today_str()} {now_cst().strftime("%H:%M:%S")} Redis={ok}')
+    return ok
 
 
 # ── 最後提醒時間（持久化）────────────────────────────────────
@@ -132,17 +142,32 @@ def webhook():
         if gid: seen_groups.add(gid)
         if uid: seen_users.add(uid)
 
-        # 偵測 Excel 檔案上傳
+        # 偵測 Excel / ZIP 檔案上傳
         if event.get('type') == 'message':
             msg = event.get('message', {})
             if msg.get('type') == 'file':
                 fname = msg.get('fileName', '')
-                print(f'[FILE] {fname} | group={gid} | user={uid}')
+                recv_time = now_cst().strftime('%H:%M:%S')
+                print(f'[WEBHOOK {recv_time}] 收到檔案: {fname} | group={gid} | user={uid}')
                 if KEYWORD in fname:
-                    mark_uploaded()
-                    print(f'[✅] 已上傳：{fname}（{today_str()}）')
+                    ok = mark_uploaded()
+                    print(f'[✅ {recv_time}] 偵測成功：{fname}（{today_str()}）Redis={ok}')
+                else:
+                    print(f'[⚠️ {recv_time}] 關鍵字不符，略過：{fname}')
 
     return 'OK', 200
+
+
+# ── 手動標記上傳（備用）───────────────────────────────────────
+@app.route('/mark', methods=['GET'])
+def manual_mark():
+    """手動標記今日已上傳，用於 webhook 失敗時的備用方案"""
+    ok = mark_uploaded()
+    return jsonify({
+        'status'  : '已手動標記上傳',
+        'date'    : today_str(),
+        'redis_ok': ok
+    })
 
 
 # ── 狀態查詢 ───────────────────────────────────────────────────
